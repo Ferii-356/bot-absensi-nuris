@@ -1,7 +1,6 @@
 const admin = require("firebase-admin");
 const { Telegraf } = require("telegraf");
 
-// Inisialisasi Firebase Admin hanya sekali (Vercel bisa reuse antar request)
 if (!admin.apps.length) {
   const serviceAccount = JSON.parse(
     Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, "base64").toString("utf-8")
@@ -15,7 +14,32 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// /start - pesan sambutan
+// Kirim notifikasi ke semua pengurus (super_admin & sekretaris)
+async function kirimNotifikasiPengurus(judul, isi) {
+  const query = await db
+    .collection("users")
+    .where("role", "in", ["super_admin", "sekretaris"])
+    .get();
+
+  const tokens = query.docs
+    .map((doc) => doc.data().fcm_token)
+    .filter((token) => !!token);
+
+  if (tokens.length === 0) return;
+
+  try {
+    await admin.messaging().sendEachForMulticast({
+      tokens: tokens,
+      notification: {
+        title: judul,
+        body: isi,
+      },
+    });
+  } catch (error) {
+    console.error("Gagal kirim notifikasi:", error);
+  }
+}
+
 bot.start((ctx) => {
   ctx.reply(
     "Assalamu'alaikum! 👋\n\n" +
@@ -26,7 +50,6 @@ bot.start((ctx) => {
   );
 });
 
-// /daftar <NIM> - hubungkan chat_id Telegram dengan data santri
 bot.command("daftar", async (ctx) => {
   const teks = ctx.message.text.split(" ");
   const nim = teks[1];
@@ -63,7 +86,6 @@ bot.command("daftar", async (ctx) => {
   );
 });
 
-// /izin <alasan> - catat izin ke Firestore
 bot.command("izin", async (ctx) => {
   const teksLengkap = ctx.message.text;
   const alasan = teksLengkap.replace("/izin", "").trim();
@@ -99,6 +121,12 @@ bot.command("izin", async (ctx) => {
     timestamp: admin.firestore.FieldValue.serverTimestamp(),
   });
 
+  // Kirim notifikasi ke pengurus
+  await kirimNotifikasiPengurus(
+    "Izin Baru",
+    `${santriData.nama} mengirim izin: "${alasan}"`
+  );
+
   return ctx.reply(
     `Izin kamu sudah dicatat, ${santriData.nama}.\n` +
     `Alasan: "${alasan}"\n\n` +
@@ -106,7 +134,6 @@ bot.command("izin", async (ctx) => {
   );
 });
 
-// Perintah tidak dikenali
 bot.on("text", (ctx) => {
   ctx.reply(
     "Perintah tidak dikenali. Gunakan:\n" +
@@ -115,7 +142,6 @@ bot.on("text", (ctx) => {
   );
 });
 
-// Handler untuk Vercel Serverless Function (menerima webhook dari Telegram)
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
     return res.status(200).send("Bot izin absensi santri aktif.");
