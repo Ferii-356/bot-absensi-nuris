@@ -73,6 +73,16 @@ bot.command("daftar", async (ctx) => {
     );
   }
 
+  // Lepas chat_id ini dari santri lain (kalau sebelumnya pernah dipakai daftar santri berbeda)
+  const santriLain = await db
+    .collection("santri")
+    .where("telegram_chat_id", "==", chatId)
+    .get();
+
+  for (const doc of santriLain.docs) {
+    await doc.ref.update({ telegram_chat_id: admin.firestore.FieldValue.delete() });
+  }
+
   const santriDoc = query.docs[0];
   const santriData = santriDoc.data();
 
