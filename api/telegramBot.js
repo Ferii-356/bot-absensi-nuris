@@ -98,10 +98,10 @@ bot.command("daftar", async (ctx) => {
 
 bot.command("izin", async (ctx) => {
   const teksLengkap = ctx.message.text;
-  const alasan = teksLengkap.replace("/izin", "").trim();
+  const alasan = teksLengkap.replace(/^\/izin(@\S+)?\s*/i, "").trim();
 
   if (!alasan) {
-    return ctx.reply("Format salah. Contoh: /izin Sakit demam");
+    return ctx.reply("Format salah. Contoh: /izin Sakit demam, tidak bisa ikut asrama");
   }
 
   const chatId = ctx.chat.id.toString();
@@ -122,26 +122,82 @@ bot.command("izin", async (ctx) => {
   const santriDoc = query.docs[0];
   const santriData = santriDoc.data();
 
-  await db.collection("izin").add({
+  // Simpan state sementara ke Firestore karena Vercel itu serverless (stateless)
+  const pendingRef = await db.collection("pending_izin").add({
+    chat_id: chatId,
     santri_id: santriDoc.id,
-    nama: santriData.nama,
-    kelas_id: santriData.kelas_id,
+    santri_data: santriData,
     alasan: alasan,
-    sumber: "telegram",
-    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 
-  // Kirim notifikasi ke pengurus
-  await kirimNotifikasiPengurus(
-    "Izin Baru",
-    `${santriData.nama} mengirim izin: "${alasan}"`
-  );
+  const docId = pendingRef.id;
 
   return ctx.reply(
-    `Izin kamu sudah dicatat, ${santriData.nama}.\n` +
-    `Alasan: "${alasan}"\n\n` +
-    `Semoga lekas membaik / urusan lancar. 🙏`
+    `📋 *Pilih sesi yang ingin kamu izinkan:*\n\nAlasan: "${alasan}"`,
+    {
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "🌅 Maghrib", callback_data: `izin_sesi:maghrib:${docId}` },
+            { text: "🌙 Isya", callback_data: `izin_sesi:isya:${docId}` },
+            { text: "⭐ Subuh", callback_data: `izin_sesi:subuh:${docId}` },
+          ],
+        ],
+      },
+    }
   );
+});
+
+bot.action(/^izin_sesi:(maghrib|isya|subuh):(.+)$/, async (ctx) => {
+  try {
+    const sesi = ctx.match[1];
+    const docId = ctx.match[2];
+
+    const pendingDoc = await db.collection("pending_izin").doc(docId).get();
+    if (!pendingDoc.exists) {
+      await ctx.answerCbQuery();
+      return ctx.reply("Data izin sudah kadaluarsa atau tidak ditemukan. Silakan kirim ulang /izin.");
+    }
+
+    const data = pendingDoc.data();
+    
+    // Simpan ke collection izin utama
+    await db.collection("izin").add({
+      santri_id: data.santri_id,
+      nama: data.santri_data.nama,
+      kelas_id: data.santri_data.kelas_id,
+      alasan: data.alasan,
+      sesi: sesi,
+      sumber: "telegram",
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Hapus data sementara
+    await pendingDoc.ref.delete();
+
+    // Kirim notifikasi ke pengurus
+    await kirimNotifikasiPengurus(
+      "Izin Baru",
+      `${data.santri_data.nama} izin sesi ${sesi.toUpperCase()}: "${data.alasan}"`
+    );
+
+    const labelSesi = sesi.charAt(0).toUpperCase() + sesi.slice(1);
+    await ctx.editMessageText(
+      `✅ Izin kamu sudah dicatat, ${data.santri_data.nama}.\n` +
+      `Sesi: *${labelSesi}*\n` +
+      `Alasan: "${data.alasan}"\n\n` +
+      `Semoga lekas membaik / urusan lancar. 🙏`,
+      { parse_mode: "Markdown" }
+    );
+
+    return ctx.answerCbQuery("Izin berhasil dicatat!");
+  } catch (error) {
+    console.error("Error action izin_sesi:", error);
+    await ctx.answerCbQuery("Terjadi kesalahan.");
+    return ctx.reply("Gagal memproses izin. Silakan coba lagi nanti.");
+  }
 });
 
 bot.on("text", (ctx) => {
